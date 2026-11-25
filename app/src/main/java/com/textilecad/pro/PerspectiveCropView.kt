@@ -1,0 +1,188 @@
+package com.textilecad.pro
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
+import android.util.AttributeSet
+import android.view.MotionEvent
+import android.view.View
+import kotlin.math.hypot
+import kotlin.math.min
+
+/**
+ * Interactive 4-Corner Repeat & Skew Straightener View (Ashrafi Part 26 Workflow).
+ * Drag the 4 glowing corner handles onto the 4 matching motif landmarks of a skewed WhatsApp photo.
+ */
+class PerspectiveCropView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null
+) : View(context, attrs) {
+
+    private var previewBitmap: Bitmap? = null
+    private val imgRect = RectF()
+
+    // Normalized 0..1 coordinates: TL, TR, BR, BL
+    private val normPts = floatArrayOf(
+        0.06f, 0.06f,
+        0.94f, 0.06f,
+        0.94f, 0.94f,
+        0.06f, 0.94f
+    )
+    private var activeCorner = -1
+    var cropHandlesVisible = true
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#CCFF00")
+        strokeWidth = 4.5f
+        style = Paint.Style.STROKE
+    }
+
+    private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(95, 204, 255, 0)
+        strokeWidth = 2f
+        style = Paint.Style.STROKE
+    }
+
+    private val handleFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#CCFF00")
+        style = Paint.Style.FILL
+    }
+
+    private val handleStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#09090B")
+        strokeWidth = 4f
+        style = Paint.Style.STROKE
+    }
+
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#09090B")
+        textSize = 26f
+        isFakeBoldText = true
+        textAlign = Paint.Align.CENTER
+    }
+
+    private val shadePaint = Paint().apply {
+        color = Color.argb(120, 0, 0, 0)
+    }
+
+    fun setBitmap(bmp: Bitmap?, resetCorners: Boolean = true) {
+        previewBitmap = bmp
+        if (resetCorners) resetQuad()
+        computeImageRect()
+        invalidate()
+    }
+
+    fun resetQuad() {
+        normPts[0] = 0.04f; normPts[1] = 0.04f
+        normPts[2] = 0.96f; normPts[3] = 0.04f
+        normPts[4] = 0.96f; normPts[5] = 0.96f
+        normPts[6] = 0.04f; normPts[7] = 0.96f
+        invalidate()
+    }
+
+    fun getNormalizedCorners(): FloatArray = normPts.copyOf()
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        computeImageRect()
+    }
+
+    private fun computeImageRect() {
+        val bmp = previewBitmap ?: return
+        if (width <= 0 || height <= 0) return
+        val scale = min(width.toFloat() / bmp.width, height.toFloat() / bmp.height)
+        val dw = bmp.width * scale
+        val dh = bmp.height * scale
+        val left = (width - dw) / 2f
+        val top = (height - dh) / 2f
+        imgRect.set(left, top, left + dw, top + dh)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        canvas.drawColor(Color.parseColor("#111116"))
+        val bmp = previewBitmap ?: return
+        if (imgRect.isEmpty) computeImageRect()
+
+        canvas.drawBitmap(bmp, null, imgRect, null)
+        if (!cropHandlesVisible) return
+
+        val x0 = imgRect.left + normPts[0] * imgRect.width()
+        val y0 = imgRect.top + normPts[1] * imgRect.height()
+        val x1 = imgRect.left + normPts[2] * imgRect.width()
+        val y1 = imgRect.top + normPts[3] * imgRect.height()
+        val x2 = imgRect.left + normPts[4] * imgRect.width()
+        val y2 = imgRect.top + normPts[5] * imgRect.height()
+        val x3 = imgRect.left + normPts[6] * imgRect.width()
+        val y3 = imgRect.top + normPts[7] * imgRect.height()
+
+        val quadPath = Path().apply {
+            moveTo(x0, y0); lineTo(x1, y1); lineTo(x2, y2); lineTo(x3, y3); close()
+        }
+        canvas.drawPath(quadPath, linePaint)
+
+        // Internal center crosshair guides (Repeat Landmark alignment)
+        canvas.drawLine((x0 + x1) / 2f, (y0 + y1) / 2f, (x3 + x2) / 2f, (y3 + y2) / 2f, guidePaint)
+        canvas.drawLine((x0 + x3) / 2f, (y0 + y3) / 2f, (x1 + x2) / 2f, (y1 + y2) / 2f, guidePaint)
+
+        val coords = arrayOf(x0 to y0, x1 to y1, x2 to y2, x3 to y3)
+        for (i in coords.indices) {
+            val (cx, cy) = coords[i]
+            val r = if (i == activeCorner) 34f else 26f
+            canvas.drawCircle(cx, cy, r, handleFill)
+            canvas.drawCircle(cx, cy, r, handleStroke)
+            canvas.drawText("${i + 1}", cx, cy + 9f, textPaint)
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!cropHandlesVisible || previewBitmap == null || imgRect.isEmpty) return false
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                var bestIdx = -1
+                var bestDist = 95f
+                for (i in 0 until 4) {
+                    val cx = imgRect.left + normPts[i * 2] * imgRect.width()
+                    val cy = imgRect.top + normPts[i * 2 + 1] * imgRect.height()
+                    val d = hypot(event.x - cx, event.y - cy)
+                    if (d < bestDist) {
+                        bestDist = d
+                        bestIdx = i
+                    }
+                }
+                activeCorner = bestIdx
+                if (activeCorner >= 0) {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    invalidate()
+                    return true
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (activeCorner >= 0) {
+                    val nx = ((event.x - imgRect.left) / imgRect.width()).coerceIn(0f, 1f)
+                    val ny = ((event.y - imgRect.top) / imgRect.height()).coerceIn(0f, 1f)
+                    normPts[activeCorner * 2] = nx
+                    normPts[activeCorner * 2 + 1] = ny
+                    invalidate()
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                activeCorner = -1
+                parent?.requestDisallowInterceptTouchEvent(false)
+                invalidate()
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+}
