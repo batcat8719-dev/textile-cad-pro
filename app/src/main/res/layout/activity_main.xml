@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0B0B0F"
+    android:orientation="vertical"
+    android:paddingTop="32dp">
+
+    <!-- Top Studio Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:background="#14141C"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="14dp"
+        android:paddingEnd="10dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:fontFamily="sans-serif-medium"
+            android:text="✦ TEXTILE CAD PRO (300 DPI PSD)"
+            android:textColor="#CCFF00"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnPhotopea"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:text="PHOTOPEA"
+            android:textColor="#38BDF8"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <!-- Interactive 4-Corner Repeat / CAD Preview Workspace -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#111116">
+
+        <com.textilecad.pro.PerspectiveCropView
+            android:id="@+id/cropView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <TextView
+            android:id="@+id/tvHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:padding="24dp"
+            android:text="WhatsApp design photo select karo\n\nApp khud Skew Fix + Colour Separation +\nTrapping + 300 DPI Spot-Channel .PSD bana dega"
+            android:textColor="#A1A1AA"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:background="#CC09090B"
+            android:gravity="center"
+            android:padding="8dp"
+            android:text="Step 1: WhatsApp photo chuno aur 4 konon par dots set karo"
+            android:textColor="#CCFF00"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </FrameLayout>
+
+    <!-- Mill Control Panel -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#14141C"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <!-- Row 1: Colours + Chemistry + Rotary Repeat + Repeat Type -->
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnColors"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginEnd="6dp"
+                    android:text="SCREENS: 4"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnChemistry"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginEnd="6dp"
+                    android:text="PROCION"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnRotary"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginEnd="6dp"
+                    android:text="6.31&quot; (4/cyl)"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnRepeatType"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginEnd="6dp"
+                    android:text="STRAIGHT"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnResetQuad"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:text="RESET 4-PTS"
+                    android:textSize="11sp" />
+            </LinearLayout>
+        </HorizontalScrollView>
+
+        <!-- Row 2: Main Action Buttons -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnPick"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_weight="1"
+                android:text="PICK PHOTO"
+                android:textSize="12sp" />
+
+            <View
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/btnBuildCad"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_weight="1.5"
+                android:text="✦ BUILD PSD + CAD"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+</LinearLayout>
