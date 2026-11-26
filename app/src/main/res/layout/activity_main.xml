@@ -2,41 +2,68 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0B0B0F"
+    android:background="#09090B"
     android:orientation="vertical"
     android:paddingTop="32dp">
 
-    <!-- Top Studio Header -->
+    <!-- Top Mill Studio Header -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="50dp"
+        android:layout_height="48dp"
         android:background="#14141C"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="14dp"
-        android:paddingEnd="10dp">
+        android:paddingStart="12dp"
+        android:paddingEnd="6dp">
 
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:fontFamily="sans-serif-medium"
-            android:text="✦ TEXTILE CAD PRO (300 DPI PSD)"
+            android:text="✦ TEXTILE CAD V2"
             android:textColor="#CCFF00"
             android:textSize="13sp"
             android:textStyle="bold" />
 
         <Button
+            android:id="@+id/btnApiKey"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:minWidth="0dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="✦ API"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp" />
+
+        <Button
+            android:id="@+id/btnGeminiPro"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:minWidth="0dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="✦ GEMINI"
+            android:textColor="#CCFF00"
+            android:textSize="10sp" />
+
+        <Button
             android:id="@+id/btnPhotopea"
             style="?android:attr/buttonBarButtonStyle"
             android:layout_width="wrap_content"
-            android:layout_height="38dp"
+            android:layout_height="36dp"
+            android:minWidth="0dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
             android:text="PHOTOPEA"
             android:textColor="#38BDF8"
-            android:textSize="11sp" />
+            android:textSize="10sp" />
     </LinearLayout>
 
-    <!-- Interactive 4-Corner Repeat / CAD Preview Workspace -->
+    <!-- Interactive Workspace (4-Corner Crop + F2/F3 Touch Tracing + CAD Preview) -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -55,9 +82,9 @@
             android:layout_gravity="center"
             android:gravity="center"
             android:padding="24dp"
-            android:text="WhatsApp design photo select karo\n\nApp khud Skew Fix + Colour Separation +\nTrapping + 300 DPI Spot-Channel .PSD bana dega"
+            android:text="1. WhatsApp photo PICK karo\n2. ✦ AI EXTRACT (ya ✦ GEMINI) se flat traced tile nikalo\n3. F2/F3 Trace se touch-up karo\n4. ✦ BUILD PSD + CAD dabao!"
             android:textColor="#A1A1AA"
-            android:textSize="14sp" />
+            android:textSize="13sp" />
 
         <TextView
             android:id="@+id/tvStatus"
@@ -67,25 +94,79 @@
             android:background="#CC09090B"
             android:gravity="center"
             android:padding="8dp"
-            android:text="Step 1: WhatsApp photo chuno aur 4 konon par dots set karo"
+            android:text="Step 1: PICK PHOTO dabao"
             android:textColor="#CCFF00"
-            android:textSize="12sp"
+            android:textSize="11sp"
             android:textStyle="bold" />
     </FrameLayout>
 
-    <!-- Mill Control Panel -->
+    <!-- Bottom Mill Control Deck -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#14141C"
         android:orientation="vertical"
-        android:padding="12dp">
+        android:padding="10dp">
 
-        <!-- Row 1: Colours + Chemistry + Rotary Repeat + Repeat Type -->
+        <!-- Row 1: AI Extractor + F2/F3 Touch Tracing Tools -->
         <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="10dp"
+            android:layout_marginBottom="6dp"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnAiExtract"
+                    android:layout_width="wrap_content"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="6dp"
+                    android:text="✦ AI EXTRACT"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btnTool"
+                    android:layout_width="wrap_content"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="6dp"
+                    android:text="MODE: 4-PT"
+                    android:textSize="10sp" />
+
+                <View
+                    android:id="@+id/vColorSwatch"
+                    android:layout_width="28dp"
+                    android:layout_height="28dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="#000000" />
+
+                <Button
+                    android:id="@+id/btnUndo"
+                    android:layout_width="wrap_content"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="6dp"
+                    android:text="UNDO"
+                    android:textSize="10sp" />
+
+                <Button
+                    android:id="@+id/btnDotting"
+                    android:layout_width="wrap_content"
+                    android:layout_height="38dp"
+                    android:text="DOT: OFF"
+                    android:textSize="10sp" />
+            </LinearLayout>
+        </HorizontalScrollView>
+
+        <!-- Row 2: Sanganer Mill Standards -->
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
             android:scrollbars="none">
 
             <LinearLayout
@@ -96,45 +177,45 @@
                 <Button
                     android:id="@+id/btnColors"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
+                    android:layout_height="38dp"
                     android:layout_marginEnd="6dp"
                     android:text="SCREENS: 4"
-                    android:textSize="11sp" />
+                    android:textSize="10sp" />
 
                 <Button
                     android:id="@+id/btnChemistry"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
+                    android:layout_height="38dp"
                     android:layout_marginEnd="6dp"
                     android:text="PROCION"
-                    android:textSize="11sp" />
+                    android:textSize="10sp" />
 
                 <Button
                     android:id="@+id/btnRotary"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
+                    android:layout_height="38dp"
                     android:layout_marginEnd="6dp"
                     android:text="6.31&quot; (4/cyl)"
-                    android:textSize="11sp" />
+                    android:textSize="10sp" />
 
                 <Button
                     android:id="@+id/btnRepeatType"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
+                    android:layout_height="38dp"
                     android:layout_marginEnd="6dp"
                     android:text="STRAIGHT"
-                    android:textSize="11sp" />
+                    android:textSize="10sp" />
 
                 <Button
                     android:id="@+id/btnResetQuad"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
-                    android:text="RESET 4-PTS"
-                    android:textSize="11sp" />
+                    android:layout_height="38dp"
+                    android:text="RESET 4-PT"
+                    android:textSize="10sp" />
             </LinearLayout>
         </HorizontalScrollView>
 
-        <!-- Row 2: Main Action Buttons -->
+        <!-- Row 3: Primary Actions -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -144,10 +225,10 @@
             <Button
                 android:id="@+id/btnPick"
                 android:layout_width="0dp"
-                android:layout_height="52dp"
+                android:layout_height="48dp"
                 android:layout_weight="1"
                 android:text="PICK PHOTO"
-                android:textSize="12sp" />
+                android:textSize="11sp" />
 
             <View
                 android:layout_width="8dp"
@@ -156,10 +237,10 @@
             <Button
                 android:id="@+id/btnBuildCad"
                 android:layout_width="0dp"
-                android:layout_height="52dp"
+                android:layout_height="48dp"
                 android:layout_weight="1.5"
                 android:text="✦ BUILD PSD + CAD"
-                android:textSize="12sp"
+                android:textSize="11sp"
                 android:textStyle="bold" />
         </LinearLayout>
     </LinearLayout>
