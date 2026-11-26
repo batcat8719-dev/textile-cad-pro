@@ -336,7 +336,11 @@ class TextileCadEngine(private val context: Context) {
                     val d = colorDistSq(sr, sg, sb, cR[c], cG[c], cB[c])
                     if (d < bestD) { bestD = d; bestIdx = c }
                 }
-                sumR[bestIdx] += sr; sumG[bestIdx] += sg; sumB[bestIdx] += sb; cnt[bestIdx]++
+                                sumR[bestIdx] = sumR[bestIdx] + sr.toDouble()
+                sumG[bestIdx] = sumG[bestIdx] + sg.toDouble()
+                sumB[bestIdx] = sumB[bestIdx] + sb.toDouble()
+                cnt[bestIdx] = cnt[bestIdx] + 1
+                
             }
             for (c in 0 until k) {
                 if (cnt[c] > 0) {
