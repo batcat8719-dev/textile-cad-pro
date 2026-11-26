@@ -3,22 +3,29 @@ package com.textilecad.pro
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Base64
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
-import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 enum class PrintChemistry(val label: String) {
@@ -32,7 +39,6 @@ enum class RepeatType(val label: String) {
     HALF_DROP("HALF-DROP")
 }
 
-// Standard Indian Mill 25.25" Rotary Screen Repeat Divisions (Ashrafi Master Guide)
 enum class RotaryRepeat(val divisions: Int, val inches: Float, val label: String) {
     DIV_2(2, 12.625f, "12.62\" (2/cyl)"),
     DIV_3(3, 8.416f, "8.41\" (3/cyl)"),
@@ -42,6 +48,12 @@ enum class RotaryRepeat(val divisions: Int, val inches: Float, val label: String
     DIV_7(7, 3.607f, "3.60\" (7/cyl)"),
     DIV_8(8, 3.156f, "3.15\" (8/cyl)")
 }
+
+data class AiExtractOutcome(
+    val success: Boolean,
+    val bitmap: Bitmap?,
+    val message: String
+)
 
 data class CadBuildResult(
     val previewCadBitmap: Bitmap,
@@ -55,6 +67,118 @@ data class CadBuildResult(
 
 class TextileCadEngine(private val context: Context) {
 
+    companion object {
+        const val DEFAULT_AI_MODEL = "gemini-2.5-flash-image"
+
+        fun buildExtractionPrompt(numColors: Int): String = """
+Extract ONLY the textile print pattern from this garment/fabric photo onto a completely flat, straight 2D square tile. Remove the garment silhouette, mannequin, body, folds, wrinkles, shadows, background, and fabric texture completely. Redraw and cleanly trace every floral motif, booty, leaf, vine, and border in sharp, crisp, flat Sanganer screen-printing CAD style using strictly $numColors flat solid colors with 100% hard vector-like edges, smooth clean curves, zero gradients, zero halftones, zero blur, and zero speckles. Make it a clean seamless all-over textile print repeat tile ready for screen printing color separation.
+        """.trimIndent()
+    }
+
+    // ==================== 1. ONLINE AI PATTERN EXTRACTOR (GARMENT -> FLAT TRACED TILE) ====================
+
+    fun extractFlatDesignWithAi(
+        source: Bitmap,
+        numColors: Int,
+        apiKey: String,
+        modelId: String
+    ): AiExtractOutcome {
+        val targetW = 1024
+        val scale = targetW.toFloat() / max(source.width, source.height).coerceAtLeast(1)
+        val resized = if (scale < 1f) {
+            Bitmap.createScaledBitmap(
+                source,
+                (source.width * scale).roundToInt().coerceAtLeast(64),
+                (source.height * scale).roundToInt().coerceAtLeast(64),
+                true
+            )
+        } else source
+
+        val baos = ByteArrayOutputStream()
+        resized.compress(Bitmap.CompressFormat.JPEG, 90, baos)
+        if (resized !== source) resized.recycle()
+        val base64Img = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+
+        val cleanModel = modelId.ifBlank { DEFAULT_AI_MODEL }.trim()
+        val prompt = buildExtractionPrompt(numColors)
+
+        var conn: HttpURLConnection? = null
+        return try {
+            val genConfig = JSONObject()
+                .put("responseModalities", JSONArray().put("TEXT").put("IMAGE"))
+                .put("imageConfig", JSONObject().put("aspectRatio", "1:1"))
+
+            val body = JSONObject()
+                .put(
+                    "contents",
+                    JSONArray().put(
+                        JSONObject().put(
+                            "parts",
+                            JSONArray()
+                                .put(JSONObject().put("text", prompt))
+                                .put(
+                                    JSONObject().put(
+                                        "inlineData",
+                                        JSONObject().put("mimeType", "image/jpeg").put("data", base64Img)
+                                    )
+                                )
+                        )
+                    )
+                )
+                .put("generationConfig", genConfig)
+
+            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$cleanModel:generateContent?key=$apiKey")
+            conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15000
+                readTimeout = 90000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val respText = stream?.bufferedReader()?.use { it.readText() } ?: ""
+
+            if (code !in 200..299) {
+                val err = try {
+                    JSONObject(respText).optJSONObject("error")?.optString("message") ?: "HTTP $code"
+                } catch (_: Exception) { "HTTP $code" }
+                return AiExtractOutcome(false, null, "API $code: ${err.take(90)}")
+            }
+
+            val parts = JSONObject(respText)
+                .optJSONArray("candidates")
+                ?.optJSONObject(0)
+                ?.optJSONObject("content")
+                ?.optJSONArray("parts")
+                ?: return AiExtractOutcome(false, null, "Empty AI response")
+
+            for (i in 0 until parts.length()) {
+                val p = parts.getJSONObject(i)
+                val inline = p.optJSONObject("inlineData") ?: p.optJSONObject("inline_data")
+                if (inline != null) {
+                    val dataStr = inline.optString("data", "")
+                    if (dataStr.isNotEmpty()) {
+                        val bytes = Base64.decode(dataStr, Base64.DEFAULT)
+                        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (bmp != null) {
+                            return AiExtractOutcome(true, bmp, "✦ Flat Traced Design Extracted!")
+                        }
+                    }
+                }
+            }
+            AiExtractOutcome(false, null, "AI returned text only — check Model ID or use ✦ GEMINI button")
+        } catch (e: Exception) {
+            AiExtractOutcome(false, null, e.message ?: "Network error")
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    // ==================== 2. OPERATOR-READY 300 DPI PSD & CAD PIPELINE ====================
+
     fun buildOperatorReadyCad(
         source: Bitmap,
         normCorners: FloatArray,
@@ -62,16 +186,15 @@ class TextileCadEngine(private val context: Context) {
         chemistry: PrintChemistry,
         repeatType: RepeatType,
         rotary: RotaryRepeat,
+        enableDotting32Lpi: Boolean,
         designCode: String,
         onProgress: (String) -> Unit
     ): CadBuildResult {
-        // 1. Perspective Straighten (Ctrl+T Skew Fix) & Scale to Clean Mill Working Resolution
         onProgress("1/6 Perspective straightening & 300 DPI sizing...")
         val targetH = (rotary.inches * 300f).roundToInt().coerceIn(900, 1800)
         val warped = warpPerspectiveRepeat(source, normCorners, targetH)
 
-        // 2. Flatten Uneven WhatsApp Photo Lighting & Shadows
-        onProgress("2/6 Flattening WhatsApp shadows & normalizing white balance...")
+        onProgress("2/6 Flattening lighting & cleaning fabric texture...")
         val flattened = flattenUnevenLighting(warped)
         if (warped !== source) warped.recycle()
 
@@ -82,42 +205,32 @@ class TextileCadEngine(private val context: Context) {
         flattened.getPixels(pixels, 0, w, 0, 0, w, h)
         flattened.recycle()
 
-        // 3. K-Means++ Colour Separation + Majority De-speckling (Kills JPEG noise)
-        onProgress("3/6 Separating $numColors flat colours & removing JPEG noise...")
+        onProgress("3/6 Separating $numColors flat colours & killing speckles...")
         val (palette, rawLabels) = quantizeFlatColors(pixels, w, h, numColors.coerceIn(2, 8))
-        val cleanLabels = majorityDespeckle(rawLabels, w, h, passes = 2)
+        val smoothedLabels = majorityDespeckle(rawLabels, w, h, passes = 3)
+        // Connected-component Speckle-Killer: removes all tiny noisy islands (< 28 px)
+        val cleanLabels = removeTinySpeckles(smoothedLabels, w, h, minAreaPx = 28)
 
-        // Count pixel area per cluster
         val counts = IntArray(palette.size)
         for (lbl in cleanLabels) counts[lbl]++
 
-        // Identify Ground (Gadd) = largest area cluster
         val groundIdx = counts.indices.maxByOrNull { counts[it] } ?: 0
-
-        // Identify Rekh (Outline) = darkest non-ground colour (if sufficiently dark)
         val rekhIdx = palette.indices
             .filter { it != groundIdx }
             .minByOrNull { luma(palette[it]) }
             ?.takeIf { luma(palette[it]) < 115 }
 
-        // 4. Ashrafi Channel Stack Ordering (Top: Lightest -> Middle: Motifs -> Ground -> BOTTOM: Rekh)
-        onProgress("4/6 Applying ${chemistry.name} chemistry, trapping & Bottom Rekh rule...")
+        onProgress("4/6 Applying ${chemistry.name} chemistry, trapping & Bottom Rekh...")
         val orderedClusterIndices = mutableListOf<Int>()
         val midClusters = palette.indices
             .filter { it != groundIdx && it != rekhIdx }
-            .sortedByDescending { luma(palette[it]) } // Lightest on top
+            .sortedByDescending { luma(palette[it]) }
 
         orderedClusterIndices.addAll(midClusters)
-        // Discharge Golden Rule: Dark dyed kapda is already ground — NO Gadd screen!
         val skipGround = (chemistry == PrintChemistry.DISCHARGE && luma(palette[groundIdx]) < 145)
-        if (!skipGround) {
-            orderedClusterIndices.add(groundIdx)
-        }
-        if (rekhIdx != null) {
-            orderedClusterIndices.add(rekhIdx) // Bottom Rekh Rule!
-        }
+        if (!skipGround) orderedClusterIndices.add(groundIdx)
+        if (rekhIdx != null) orderedClusterIndices.add(rekhIdx)
 
-        // Build 100% Binary Hard-Edge Spot Channels (0 = Black Ink, 255 = White/No Ink)
         val spotChannels = mutableListOf<SpotChannelData>()
         for (stackPos in orderedClusterIndices.indices) {
             val cIdx = orderedClusterIndices[stackPos]
@@ -130,45 +243,41 @@ class TextileCadEngine(private val context: Context) {
 
             when (chemistry) {
                 PrintChemistry.PROCION -> {
-                    // Procion Rule: 1 px Expand (Trapping / Alt+S+M+E) on lighter colors under darker colors
-                    if (!isRekh && !isGround) {
-                        mask = dilateBinary(mask, w, h)
-                    }
+                    if (!isRekh && !isGround) mask = dilateBinary(mask, w, h)
                 }
                 PrintChemistry.DISCHARGE -> {
-                    // Discharge Golden Rule: Control White Discharge weight (1 px Contract/Choke)
-                    if (isWhiteOrLightest) {
-                        mask = erodeBinary(mask, w, h)
-                    }
+                    if (isWhiteOrLightest) mask = erodeBinary(mask, w, h)
                 }
                 PrintChemistry.KHADI_GOLD -> {
-                    // Khadi / Gold Rule: Minimum 3-4 px line thickness so thick paste never chokes mesh
                     mask = dilateBinary(mask, w, h)
                 }
             }
 
-            // Convert boolean ink mask to strict Binary ByteArray (0 = Ink, 255 = Empty)
-            val inkBytes = ByteArray(total) { i -> if (mask[i]) 0.toByte() else 0xFF.toByte() }
+            // Optional 32 LPI @ 30° Round Halftone Dotting on mid-tone shading channels
+            val applyDotsHere = enableDotting32Lpi && !isRekh && !isGround && !isWhiteOrLightest && stackPos == 1
+            val inkBytes = if (applyDotsHere) {
+                applyHalftone32Lpi(mask, w, h)
+            } else {
+                ByteArray(total) { i -> if (mask[i]) 0.toByte() else 0xFF.toByte() }
+            }
+
             val roleTag = when {
                 isRekh -> "Rekh_Outline"
                 isGround -> "Gadd_Ground"
                 isWhiteOrLightest -> "White_Reserve"
+                applyDotsHere -> "Dot32LPI_${colorNameHint(col)}"
                 else -> colorNameHint(col)
             }
-            val chName = "Ch${stackPos + 1}_$roleTag"
-            spotChannels.add(SpotChannelData(chName, col, solidity = 100, inkMask = inkBytes))
+            spotChannels.add(SpotChannelData("Ch${stackPos + 1}_$roleTag", col, 100, inkBytes))
         }
 
-        // 5. Render Clean Flattened Composite Preview from Spot Channels (Double-Q Merge Logic!)
         onProgress("5/6 Rendering clean RGB composite & Master CAD Sheet...")
         val bgBaseColor = if (skipGround) palette[groundIdx] else Color.WHITE
         val cleanTile = renderSpotComposite(w, h, bgBaseColor, spotChannels)
 
-        // Save Real 300 DPI Multichannel Spot-Channel .PSD to Download/TextileCAD-Pro/
         val psdFileName = "${designCode}_MILL_300DPI.psd"
         val psdUri = savePsdToDownloads(cleanTile, spotChannels, psdFileName)
 
-        // Build & Save Client/Operator Master CAD Presentation Sheet (Color Chits + Red Dimensions in Inches & Soot)
         val widthInches = (w.toFloat() / h.toFloat()) * rotary.inches
         val masterSheet = renderMasterCadSheet(
             tile = cleanTile,
@@ -183,8 +292,7 @@ class TextileCadEngine(private val context: Context) {
         )
         val cadSheetUri = savePngToGallery(masterSheet, "${designCode}_MASTER_CAD")
 
-        // 6. Export Individual 300 DPI Binary B&W Film Positives with 4-Corner (+) Registration Marks
-        onProgress("6/6 Saving ${spotChannels.size} B&W Film Positives with + registration marks...")
+        onProgress("6/6 Exporting ${spotChannels.size} clean B&W Film Positives...")
         for (i in spotChannels.indices) {
             val sc = spotChannels[i]
             val posBmp = renderFilmPositive(w, h, sc, designCode)
@@ -205,7 +313,100 @@ class TextileCadEngine(private val context: Context) {
         )
     }
 
-    // ==================== PERSPECTIVE WARP (CTRL+T SKEW FIX) ====================
+    // ==================== SPECKLE-KILLER (FLOOD-FILL AREA CLEANER) ====================
+
+    private fun removeTinySpeckles(labels: IntArray, w: Int, h: Int, minAreaPx: Int): IntArray {
+        val total = w * h
+        val out = labels.copyOf()
+        val visited = BooleanArray(total)
+        val queue = IntArray(total)
+        val compPixels = IntArray(minAreaPx + 8)
+
+        for (start in 0 until total) {
+            if (visited[start]) continue
+            val targetLbl = out[start]
+            var head = 0
+            var tail = 0
+            queue[tail++] = start
+            visited[start] = true
+
+            var compCount = 0
+            var neighborLbl = targetLbl
+            var foundNeighbor = false
+
+            while (head < tail) {
+                val cur = queue[head++]
+                if (compCount < compPixels.size) compPixels[compCount] = cur
+                compCount++
+
+                val cx = cur % w
+                val cy = cur / w
+
+                // 4-connected neighbors
+                if (cx > 0) {
+                    val n = cur - 1
+                    if (out[n] == targetLbl) {
+                        if (!visited[n]) { visited[n] = true; queue[tail++] = n }
+                    } else if (!foundNeighbor) { neighborLbl = out[n]; foundNeighbor = true }
+                }
+                if (cx + 1 < w) {
+                    val n = cur + 1
+                    if (out[n] == targetLbl) {
+                        if (!visited[n]) { visited[n] = true; queue[tail++] = n }
+                    } else if (!foundNeighbor) { neighborLbl = out[n]; foundNeighbor = true }
+                }
+                if (cy > 0) {
+                    val n = cur - w
+                    if (out[n] == targetLbl) {
+                        if (!visited[n]) { visited[n] = true; queue[tail++] = n }
+                    } else if (!foundNeighbor) { neighborLbl = out[n]; foundNeighbor = true }
+                }
+                if (cy + 1 < h) {
+                    val n = cur + w
+                    if (out[n] == targetLbl) {
+                        if (!visited[n]) { visited[n] = true; queue[tail++] = n }
+                    } else if (!foundNeighbor) { neighborLbl = out[n]; foundNeighbor = true }
+                }
+            }
+
+            if (compCount < minAreaPx && foundNeighbor) {
+                for (k in 0 until compCount) {
+                    out[compPixels[k]] = neighborLbl
+                }
+            }
+        }
+        return out
+    }
+
+    // ==================== 32 LPI @ 30° ROUND HALFTONE DOTTING ====================
+
+    private fun applyHalftone32Lpi(mask: BooleanArray, w: Int, h: Int): ByteArray {
+        val out = ByteArray(w * h) { 0xFF.toByte() }
+        // At 300 DPI, 32 LPI => cell period ~ 9.4 px, Angle = 30 degrees
+        val period = 9.4
+        val rad = Math.toRadians(30.0)
+        val cosA = cos(rad)
+        val sinA = sin(rad)
+        val maxDotRadius = period * 0.42
+
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                val idx = row + x
+                if (!mask[idx]) continue
+                val u = x * cosA + y * sinA
+                val v = -x * sinA + y * cosA
+                val cu = ((u % period) + period) % period - period * 0.5
+                val cv = ((v % period) + period) % period - period * 0.5
+                if (hypot(cu, cv) <= maxDotRadius) {
+                    out[idx] = 0.toByte()
+                }
+            }
+        }
+        return out
+    }
+
+    // ==================== PERSPECTIVE WARP & LIGHTING FLATTENER ====================
 
     private fun warpPerspectiveRepeat(src: Bitmap, normPts: FloatArray, targetH: Int): Bitmap {
         val sw = src.width.toFloat()
@@ -241,12 +442,9 @@ class TextileCadEngine(private val context: Context) {
         return out
     }
 
-    // ==================== WHATSAPP SHADOW / FOLD LIGHTING FLATTENER ====================
-
     private fun flattenUnevenLighting(src: Bitmap): Bitmap {
         val w = src.width
         val h = src.height
-        // Low-frequency illumination map (removes phone shadows & uneven room bulbs)
         val tiny = Bitmap.createScaledBitmap(src, 20, 20, true)
         val illumBmp = Bitmap.createScaledBitmap(tiny, w, h, true)
         tiny.recycle()
@@ -258,15 +456,12 @@ class TextileCadEngine(private val context: Context) {
         illumBmp.recycle()
 
         var sumLum = 0L
-        for (i in il.indices step 4) {
-            sumLum += luma(il[i])
-        }
+        for (i in il.indices step 4) sumLum += luma(il[i])
         val meanLum = (sumLum / (il.size / 4).coerceAtLeast(1)).toFloat().coerceIn(40f, 230f)
 
         for (i in px.indices) {
             val localLum = luma(il[i]).toFloat().coerceAtLeast(28f)
-            // Gentle 55% illumination flattening so shadows equalize without destroying dark designs
-            val gain = (1f + (meanLum / localLum - 1f) * 0.55f).coerceIn(0.74f, 1.38f)
+            val gain = (1f + (meanLum / localLum - 1f) * 0.45f).coerceIn(0.78f, 1.32f)
             val p = px[i]
             val r = (((p shr 16) and 0xFF) * gain).toInt().coerceIn(0, 255)
             val g = (((p shr 8) and 0xFF) * gain).toInt().coerceIn(0, 255)
@@ -279,7 +474,7 @@ class TextileCadEngine(private val context: Context) {
         return out
     }
 
-    // ==================== SMART K-MEANS++ FLAT COLOUR SEPARATION ====================
+    // ==================== K-MEANS++ FLAT COLOUR SEPARATION ====================
 
     private fun quantizeFlatColors(pixels: IntArray, w: Int, h: Int, k: Int): Pair<IntArray, ByteArray> {
         val step = max(1, (w * h) / 14000)
@@ -290,11 +485,7 @@ class TextileCadEngine(private val context: Context) {
             i += step
         }
 
-        // K-Means++ deterministic farthest-point initialization (guarantees small accent colours aren't lost!)
-        val cR = FloatArray(k)
-        val cG = FloatArray(k)
-        val cB = FloatArray(k)
-
+        val cR = FloatArray(k); val cG = FloatArray(k); val cB = FloatArray(k)
         val first = samples[samples.size / 2]
         cR[0] = ((first shr 16) and 0xFF).toFloat()
         cG[0] = ((first shr 8) and 0xFF).toFloat()
@@ -312,17 +503,13 @@ class TextileCadEngine(private val context: Context) {
                     val d = colorDistSq(sr, sg, sb, cR[j], cG[j], cB[j])
                     if (d < minDist) minDist = d
                 }
-                if (minDist > bestMinDist) {
-                    bestMinDist = minDist
-                    bestColor = s
-                }
+                if (minDist > bestMinDist) { bestMinDist = minDist; bestColor = s }
             }
             cR[c] = ((bestColor shr 16) and 0xFF).toFloat()
             cG[c] = ((bestColor shr 8) and 0xFF).toFloat()
             cB[c] = (bestColor and 0xFF).toFloat()
         }
 
-        // 10 iterations of weighted K-Means refinement
         val sumR = DoubleArray(k); val sumG = DoubleArray(k); val sumB = DoubleArray(k)
         val cnt = IntArray(k)
         repeat(10) {
@@ -336,11 +523,10 @@ class TextileCadEngine(private val context: Context) {
                     val d = colorDistSq(sr, sg, sb, cR[c], cG[c], cB[c])
                     if (d < bestD) { bestD = d; bestIdx = c }
                 }
-                                sumR[bestIdx] = sumR[bestIdx] + sr.toDouble()
+                sumR[bestIdx] = sumR[bestIdx] + sr.toDouble()
                 sumG[bestIdx] = sumG[bestIdx] + sg.toDouble()
                 sumB[bestIdx] = sumB[bestIdx] + sb.toDouble()
                 cnt[bestIdx] = cnt[bestIdx] + 1
-                
             }
             for (c in 0 until k) {
                 if (cnt[c] > 0) {
@@ -355,7 +541,6 @@ class TextileCadEngine(private val context: Context) {
             Color.rgb(cR[c].roundToInt().coerceIn(0, 255), cG[c].roundToInt().coerceIn(0, 255), cB[c].roundToInt().coerceIn(0, 255))
         }
 
-        // Assign every pixel to nearest flat palette colour
         val labels = ByteArray(pixels.size)
         for (idx in pixels.indices) {
             val p = pixels[idx]
@@ -372,14 +557,12 @@ class TextileCadEngine(private val context: Context) {
         return palette to labels
     }
 
-    // Perceptual redmean color distance (far more accurate for fabrics than plain RGB!)
     private fun colorDistSq(r1: Float, g1: Float, b1: Float, r2: Float, g2: Float, b2: Float): Float {
         val dr = r1 - r2; val dg = g1 - g2; val db = b1 - b2
         val rMean = (r1 + r2) * 0.5f
         return (2f + rMean / 256f) * dr * dr + 4f * dg * dg + (2f + (255f - rMean) / 256f) * db * db
     }
 
-    // Majority 3x3 Mode Filter: kills WhatsApp speckles while preserving sharp hard edges!
     private fun majorityDespeckle(labels: ByteArray, w: Int, h: Int, passes: Int): IntArray {
         var cur = IntArray(labels.size) { labels[it].toInt() and 0xFF }
         var next = IntArray(labels.size)
@@ -406,8 +589,6 @@ class TextileCadEngine(private val context: Context) {
         return cur
     }
 
-    // ==================== BINARY MORPHOLOGY (TRAPPING & CHOKE) ====================
-
     private fun dilateBinary(src: BooleanArray, w: Int, h: Int): BooleanArray {
         val out = src.copyOf()
         for (y in 1 until h - 1) {
@@ -432,18 +613,15 @@ class TextileCadEngine(private val context: Context) {
         return out
     }
 
-    // ==================== RENDER COMPOSITE, CAD SHEET & FILM POSITIVES ====================
+    // ==================== RENDER COMPOSITE, CAD SHEET & CLEAN FILM POSITIVES ====================
 
     private fun renderSpotComposite(w: Int, h: Int, baseBg: Int, channels: List<SpotChannelData>): Bitmap {
         val px = IntArray(w * h) { baseBg }
-        // Paint Top-to-Bottom in channel order (so Bottom Rekh always overprints cleanly on top!)
         for (sc in channels) {
             val col = sc.colorInt
             val mask = sc.inkMask
             for (i in px.indices) {
-                if (mask[i].toInt() == 0) {
-                    px[i] = col
-                }
+                if (mask[i].toInt() == 0) px[i] = col
             }
         }
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -462,7 +640,6 @@ class TextileCadEngine(private val context: Context) {
         designCode: String,
         dyedGroundColor: Int?
     ): Bitmap {
-        // 2x2 Repeat Canvas (Compact 1400px wide for instant WhatsApp sharing + crisp print)
         val tileDrawW = 640
         val tileDrawH = ((tile.height.toFloat() / tile.width) * tileDrawW).roundToInt().coerceIn(420, 900)
         val scaledTile = Bitmap.createScaledBitmap(tile, tileDrawW, tileDrawH, false)
@@ -479,7 +656,6 @@ class TextileCadEngine(private val context: Context) {
         val canvas = Canvas(sheet)
         canvas.drawColor(Color.WHITE)
 
-        // Draw 2x2 Repeat (Straight or Half-Drop)
         canvas.save()
         canvas.clipRect(sidePad, topHeaderH, sidePad + repeatW, topHeaderH + repeatH)
         if (repeatType == RepeatType.STRAIGHT) {
@@ -489,7 +665,6 @@ class TextileCadEngine(private val context: Context) {
                 }
             }
         } else {
-            // Half-Drop: second column shifts 50% vertically
             for (gy in 0..1) {
                 canvas.drawBitmap(scaledTile, sidePad.toFloat(), (topHeaderH + gy * tileDrawH).toFloat(), null)
             }
@@ -501,23 +676,14 @@ class TextileCadEngine(private val context: Context) {
         canvas.restore()
         scaledTile.recycle()
 
-        // Border around repeat box
-        val borderPaint = Paint().apply {
-            color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 3f
-        }
+        val borderPaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 3f }
         canvas.drawRect(sidePad.toFloat(), topHeaderH.toFloat(), (sidePad + repeatW).toFloat(), (topHeaderH + repeatH).toFloat(), borderPaint)
 
-        // Header Text (Design Code + Print Chemistry + Rotary Spec)
-        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.BLACK; textSize = 32f; isFakeBoldText = true
-        }
-        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.DKGRAY; textSize = 23f
-        }
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; textSize = 32f; isFakeBoldText = true }
+        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.DKGRAY; textSize = 23f }
         canvas.drawText("$designCode  |  ${chemistry.name}  |  ${spotChannels.size} SCREENS  |  ${repeatType.label}", sidePad.toFloat(), 48f, titlePaint)
         canvas.drawText("Rotary 25.25\" (${rotary.divisions} Div)  •  Repeat: ${formatInchesSoot(widthInches)} W × ${formatInchesSoot(heightInches)} H  •  300 DPI", sidePad.toFloat(), 84f, subPaint)
 
-        // Top Color Chits (Swatches) with Ashrafi 16px-proportional dark stroke on White swatch!
         val chitSize = 68f
         val chitGap = 18f
         var cx = sidePad.toFloat()
@@ -545,18 +711,15 @@ class TextileCadEngine(private val context: Context) {
             cx += chitSize + chitGap
         }
 
-        // Red Dimension Lines (Right = Repeat Height, Bottom = Repeat Width)
         val redLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#D50000"); strokeWidth = 3.5f }
         val redText = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#D50000"); textSize = 26f; isFakeBoldText = true; textAlign = Paint.Align.CENTER }
 
-        // Bottom Width Dimension (1 Repeat)
         val dimY = (topHeaderH + repeatH + 34).toFloat()
         canvas.drawLine(sidePad.toFloat(), dimY, (sidePad + tileDrawW).toFloat(), dimY, redLine)
         canvas.drawLine(sidePad.toFloat(), dimY - 12f, sidePad.toFloat(), dimY + 12f, redLine)
         canvas.drawLine((sidePad + tileDrawW).toFloat(), dimY - 12f, (sidePad + tileDrawW).toFloat(), dimY + 12f, redLine)
         canvas.drawText("1 Repeat W: ${formatInchesSoot(widthInches)}", sidePad + tileDrawW / 2f, dimY + 28f, redText)
 
-        // Right Height Dimension (1 Repeat)
         val dimX = (sidePad + repeatW + 36).toFloat()
         canvas.drawLine(dimX, topHeaderH.toFloat(), dimX, (topHeaderH + tileDrawH).toFloat(), redLine)
         canvas.drawLine(dimX - 12f, topHeaderH.toFloat(), dimX + 12f, topHeaderH.toFloat(), redLine)
@@ -569,10 +732,13 @@ class TextileCadEngine(private val context: Context) {
         return sheet
     }
 
+    // FIXED: Clean Film Positive with centered header & zero overlap on (+) registration marks!
     private fun renderFilmPositive(w: Int, h: Int, sc: SpotChannelData, designCode: String): Bitmap {
-        val margin = 70
-        val outW = w + margin * 2
-        val outH = h + margin * 2
+        val marginSide = 80
+        val marginTop = 100
+        val marginBot = 80
+        val outW = w + marginSide * 2
+        val outH = h + marginTop + marginBot
         val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
         canvas.drawColor(Color.WHITE)
@@ -580,16 +746,15 @@ class TextileCadEngine(private val context: Context) {
         val tilePx = IntArray(w * h) { i -> if (sc.inkMask[i].toInt() == 0) Color.BLACK else Color.WHITE }
         val tileBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         tileBmp.setPixels(tilePx, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(tileBmp, margin.toFloat(), margin.toFloat(), null)
+        canvas.drawBitmap(tileBmp, marginSide.toFloat(), marginTop.toFloat(), null)
         tileBmp.recycle()
 
-        // 4-Corner (+) Registration Marks for Screen Exposure
         val regP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; strokeWidth = 3f; style = Paint.Style.STROKE }
         val corners = arrayOf(
-            35f to 35f,
-            (outW - 35f) to 35f,
-            35f to (outH - 35f),
-            (outW - 35f) to (outH - 35f)
+            40f to 45f,
+            (outW - 40f) to 45f,
+            40f to (outH - 40f),
+            (outW - 40f) to (outH - 40f)
         )
         for ((rx, ry) in corners) {
             canvas.drawCircle(rx, ry, 14f, regP)
@@ -597,12 +762,15 @@ class TextileCadEngine(private val context: Context) {
             canvas.drawLine(rx, ry - 22f, rx, ry + 22f, regP)
         }
 
-        val lblP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; textSize = 26f; isFakeBoldText = true }
-        canvas.drawText("$designCode  •  ${sc.name}  •  300 DPI POSITIVE", 80f, 44f, lblP)
+        val lblP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            textSize = (outW * 0.022f).coerceIn(18f, 26f)
+            isFakeBoldText = true
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("$designCode • ${sc.name} • 300 DPI", outW / 2f, 52f, lblP)
         return out
     }
-
-    // ==================== FILE EXPORTS (PSD -> DOWNLOADS, PNG -> GALLERY) ====================
 
     private fun savePsdToDownloads(composite: Bitmap, spotChannels: List<SpotChannelData>, fileName: String): Uri? {
         return try {
@@ -653,8 +821,6 @@ class TextileCadEngine(private val context: Context) {
             null
         }
     }
-
-    // ==================== MILL MATH & HELPERS ====================
 
     private fun formatInchesSoot(inches: Float): String {
         val whole = inches.toInt()
