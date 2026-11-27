@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Color
 import android.graphics.Matrix
 import android.net.Uri
 import android.os.Bundle
@@ -45,8 +44,9 @@ class MainActivity : AppCompatActivity() {
     private val worker = Executors.newSingleThreadExecutor()
 
     private var lastPickedUri: Uri? = null
-    private var selectedColors = 4
-    private var selectedChemistry = PrintChemistry.PROCION
+    // 0 = AUTO screen count (detects exact flat colours automatically!)
+    private var selectedColors = 0
+    private var selectedChemistry = PrintChemistry.AUTO
     private var selectedRotary = RotaryRepeat.DIV_4
     private var selectedRepeatType = RepeatType.STRAIGHT
     private var enableDotting32Lpi = false
@@ -106,13 +106,14 @@ class MainActivity : AppCompatActivity() {
             val all = StudioTool.values()
             val next = all[(cropView.activeTool.ordinal + 1) % all.size]
             cropView.activeTool = next
-            cropView.cropHandlesVisible = (next == StudioTool.CROP_4PT)
+            cropView.cropHandlesVisible = (next == StudioTool.CROP_RECT || next == StudioTool.CROP_4PT)
             updateControlLabels()
             val tip = when (next) {
-                StudioTool.CROP_4PT -> "4-Point Mode: Repeat ke 4 konon par dots set karo"
-                StudioTool.F3_FILL -> "F3 Hard-Edge Fill: Ungli se patti/booty ghero, chhodte hi fill hoga"
-                StudioTool.F2_REKH -> "F2 Rekh Outline: Crisp 4px hard-edge line draw karo"
-                StudioTool.EYEDROPPER -> "Eyedropper: Design par tap karke screen colour pick karo"
+                StudioTool.CROP_RECT -> "Locked 90° Rect: Seedha crop (no distortion)"
+                StudioTool.CROP_4PT -> "Free 4-Point: Tirchi photo seedhi karne ke liye"
+                StudioTool.F3_FILL -> "F3 Hard-Edge Fill: Ungli se patti/booty ghero"
+                StudioTool.F2_REKH -> "F2 Rekh Outline: Crisp hard-edge line draw karo"
+                StudioTool.EYEDROPPER -> "Eyedropper: Design par tap karke colour pick karo"
             }
             tvStatus.text = tip
         }
@@ -129,7 +130,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnColors.setOnClickListener {
-            selectedColors = if (selectedColors >= 8) 2 else selectedColors + 1
+            // Cycle: AUTO (0) -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> AUTO (0)
+            selectedColors = when {
+                selectedColors == 0 -> 2
+                selectedColors >= 8 -> 0
+                else -> selectedColors + 1
+            }
             updateControlLabels()
         }
 
@@ -155,7 +161,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.btnResetQuad).setOnClickListener {
-            cropView.activeTool = StudioTool.CROP_4PT
+            cropView.activeTool = StudioTool.CROP_RECT
             cropView.cropHandlesVisible = true
             cropView.resetQuad()
             updateControlLabels()
@@ -175,12 +181,8 @@ class MainActivity : AppCompatActivity() {
         btnApiKey.text = if (getApiKey().isNotBlank()) "✦ API ✓" else "✦ API"
         btnTool.text = cropView.activeTool.label
         btnDotting.text = if (enableDotting32Lpi) "DOT: 32LPI" else "DOT: OFF"
-        btnColors.text = "SCREENS: $selectedColors"
-        btnChemistry.text = when (selectedChemistry) {
-            PrintChemistry.PROCION -> "PROCION"
-            PrintChemistry.DISCHARGE -> "DISCHARGE"
-            PrintChemistry.KHADI_GOLD -> "KHADI/GOLD"
-        }
+        btnColors.text = if (selectedColors == 0) "SCREENS: AUTO" else "SCREENS: $selectedColors"
+        btnChemistry.text = selectedChemistry.label
         btnRotary.text = selectedRotary.label
         btnRepeatType.text = selectedRepeatType.label
     }
@@ -221,11 +223,11 @@ class MainActivity : AppCompatActivity() {
 
                 runOnUiThread {
                     tvHint.visibility = View.GONE
-                    cropView.activeTool = StudioTool.CROP_4PT
+                    cropView.activeTool = StudioTool.CROP_RECT
                     cropView.cropHandlesVisible = true
                     cropView.setBitmap(oriented, resetCorners = true, clearUndo = true)
                     updateControlLabels()
-                    tvStatus.text = "Garment photo hai? Pehle '✦ AI EXTRACT' (ya ✦ GEMINI) dabao!"
+                    tvStatus.text = "Flat tile hai toh seedha '✦ BUILD PSD + CAD' dabao (Auto Mode ON)!"
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -250,7 +252,7 @@ class MainActivity : AppCompatActivity() {
         isProcessing = true
         btnAiExtract.isEnabled = false
         btnBuildCad.isEnabled = false
-        tvStatus.text = "✦ Online AI garment se flat traced design nikaal raha hai..."
+        tvStatus.text = "✦ Online AI garment se flat traced tile nikaal raha hai..."
 
         val snapshot = src.copy(Bitmap.Config.ARGB_8888, false)
         val colors = selectedColors
@@ -262,10 +264,10 @@ class MainActivity : AppCompatActivity() {
                 snapshot.recycle()
                 runOnUiThread {
                     if (res.success && res.bitmap != null) {
-                        cropView.activeTool = StudioTool.CROP_4PT
+                        cropView.activeTool = StudioTool.CROP_RECT
                         cropView.cropHandlesVisible = true
                         cropView.setBitmap(res.bitmap, resetCorners = true, clearUndo = true)
-                        tvStatus.text = "✓ Flat Traced Tile Ready! Ab '✦ BUILD PSD + CAD' dabao"
+                        tvStatus.text = "✓ Flat Tile Ready! Ab seedha '✦ BUILD PSD + CAD' dabao"
                         Toast.makeText(this, res.message, Toast.LENGTH_SHORT).show()
                     } else {
                         tvStatus.text = "AI Extract failed: ${res.message}"
@@ -291,7 +293,7 @@ class MainActivity : AppCompatActivity() {
         val prompt = TextileCadEngine.buildExtractionPrompt(selectedColors)
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("Textile CAD Extract Prompt", prompt))
-        Toast.makeText(this, "Prompt copied! Gemini Pro me paste karke flat design nikalo, phir PICK PHOTO karo", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "Prompt copied! Gemini Pro me paste karke flat tile nikalo, phir PICK PHOTO karo", Toast.LENGTH_LONG).show()
 
         val share = Intent(Intent.ACTION_SEND).apply {
             type = "image/*"
@@ -331,8 +333,8 @@ class MainActivity : AppCompatActivity() {
                 val res = cadEngine.buildOperatorReadyCad(
                     source = snapshot,
                     normCorners = corners,
-                    numColors = colors,
-                    chemistry = chem,
+                    requestedColors = colors,
+                    requestedChemistry = chem,
                     repeatType = repType,
                     rotary = rotary,
                     enableDotting32Lpi = dotting,
@@ -343,7 +345,7 @@ class MainActivity : AppCompatActivity() {
                 snapshot.recycle()
 
                 runOnUiThread {
-                    cropView.activeTool = StudioTool.CROP_4PT
+                    cropView.activeTool = StudioTool.CROP_RECT
                     cropView.cropHandlesVisible = false
                     cropView.setBitmap(res.previewCadBitmap, resetCorners = false, clearUndo = false)
                     tvStatus.text = "✓ READY: ${res.summary}"
@@ -367,12 +369,12 @@ class MainActivity : AppCompatActivity() {
     private fun showExportSuccessDialog(res: CadBuildResult) {
         val msg = StringBuilder()
         msg.append("1. Real 300 DPI Spot-Channel .PSD:\n   ${res.psdPathLabel}\n\n")
-        msg.append("2. Master CAD + ${res.positiveCount} Speckle-Free B&W Positives:\n   Gallery → Pictures/TextileCAD-Pro\n\n")
-        msg.append("Spot Channels (Top → Bottom):\n")
+        msg.append("2. Master CAD + ${res.positiveCount} Clean B&W Positives:\n   Gallery → Pictures/TextileCAD-Pro\n\n")
+        msg.append("Auto-Detected Spot Channels (Top → Bottom):\n")
         res.channelNames.forEach { msg.append("  • $it\n") }
 
         AlertDialog.Builder(this)
-            .setTitle("✦ Operator-Ready V2 CAD Saved!")
+            .setTitle("✦ Autopilot V2.1 CAD Saved!")
             .setMessage(msg.toString())
             .setPositiveButton("Open Photopea") { _, _ -> openPhotopea() }
             .setNegativeButton("Done", null)
