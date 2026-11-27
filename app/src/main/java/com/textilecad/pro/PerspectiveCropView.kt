@@ -31,12 +31,12 @@ class PerspectiveCropView @JvmOverloads constructor(
     private val imgRect = RectF()
     private val undoStack = ArrayDeque<Bitmap>()
 
-    // Default 3% inner trim automatically cuts off corner watermarks (e.g. Gemini star)
+    // 100% full-frame seamless edges (zero auto-trim)
     private val normPts = floatArrayOf(
-        0.03f, 0.03f,
-        0.97f, 0.03f,
-        0.97f, 0.97f,
-        0.03f, 0.97f
+        0f, 0f,
+        1f, 0f,
+        1f, 1f,
+        0f, 1f
     )
     private var activeCorner = -1
 
@@ -110,10 +110,10 @@ class PerspectiveCropView @JvmOverloads constructor(
     fun getCurrentBitmap(): Bitmap? = previewBitmap
 
     fun resetQuad() {
-        normPts[0] = 0.03f; normPts[1] = 0.03f
-        normPts[2] = 0.97f; normPts[3] = 0.03f
-        normPts[4] = 0.97f; normPts[5] = 0.97f
-        normPts[6] = 0.03f; normPts[7] = 0.97f
+        normPts[0] = 0f; normPts[1] = 0f
+        normPts[2] = 1f; normPts[3] = 0f
+        normPts[4] = 1f; normPts[5] = 1f
+        normPts[6] = 0f; normPts[7] = 1f
         invalidate()
     }
 
@@ -284,27 +284,26 @@ class PerspectiveCropView @JvmOverloads constructor(
                             val nx = ((event.x - imgRect.left) / imgRect.width()).coerceIn(0f, 1f)
                             val ny = ((event.y - imgRect.top) / imgRect.height()).coerceIn(0f, 1f)
                             if (activeTool == StudioTool.CROP_RECT) {
-                                // Locked 90-degree rectangle (prevents accidental trapezoid distortion!)
                                 when (activeCorner) {
-                                    0 -> { // TL
+                                    0 -> {
                                         val cx = nx.coerceAtMost(normPts[2] - 0.1f)
                                         val cy = ny.coerceAtMost(normPts[7] - 0.1f)
                                         normPts[0] = cx; normPts[1] = cy
                                         normPts[6] = cx; normPts[3] = cy
                                     }
-                                    1 -> { // TR
+                                    1 -> {
                                         val cx = nx.coerceAtLeast(normPts[0] + 0.1f)
                                         val cy = ny.coerceAtMost(normPts[5] - 0.1f)
                                         normPts[2] = cx; normPts[3] = cy
                                         normPts[4] = cx; normPts[1] = cy
                                     }
-                                    2 -> { // BR
+                                    2 -> {
                                         val cx = nx.coerceAtLeast(normPts[6] + 0.1f)
                                         val cy = ny.coerceAtLeast(normPts[3] + 0.1f)
                                         normPts[4] = cx; normPts[5] = cy
                                         normPts[2] = cx; normPts[7] = cy
                                     }
-                                    3 -> { // BL
+                                    3 -> {
                                         val cx = nx.coerceAtMost(normPts[4] - 0.1f)
                                         val cy = ny.coerceAtLeast(normPts[1] + 0.1f)
                                         normPts[6] = cx; normPts[7] = cy
