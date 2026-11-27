@@ -29,9 +29,10 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 enum class PrintChemistry(val label: String) {
-    PROCION("PROCION (RFD + Trap)"),
-    DISCHARGE("DISCHARGE (No Gadd)"),
-    KHADI_GOLD("KHADI / GOLD (Thick)")
+    AUTO("CHEM: AUTO"),
+    PROCION("PROCION"),
+    DISCHARGE("DISCHARGE"),
+    KHADI_GOLD("KHADI/GOLD")
 }
 
 enum class RepeatType(val label: String) {
@@ -70,12 +71,19 @@ class TextileCadEngine(private val context: Context) {
     companion object {
         const val DEFAULT_AI_MODEL = "gemini-2.5-flash-image"
 
-        fun buildExtractionPrompt(numColors: Int): String = """
-Extract ONLY the textile print pattern from this garment/fabric photo onto a completely flat, straight 2D square tile. Remove the garment silhouette, mannequin, body, folds, wrinkles, shadows, background, and fabric texture completely. Redraw and cleanly trace every floral motif, booty, leaf, vine, and border in sharp, crisp, flat Sanganer screen-printing CAD style using strictly $numColors flat solid colors with 100% hard vector-like edges, smooth clean curves, zero gradients, zero halftones, zero blur, and zero speckles. Make it a clean seamless all-over textile print repeat tile ready for screen printing color separation.
-        """.trimIndent()
+        fun buildExtractionPrompt(numColors: Int): String {
+            val colorRule = if (numColors <= 0) {
+                "the exact minimum number of flat solid colors actually present in the original garment print (typically 2 to 4 flat colors)"
+            } else {
+                "strictly $numColors flat solid colors"
+            }
+            return """
+Extract ONLY the textile print pattern from this garment/fabric photo onto a completely flat, straight 2D square seamless repeat tile. Remove the garment silhouette, person, body, folds, wrinkles, shadows, background, and fabric weave texture completely. Redraw and cleanly trace the motifs in sharp, crisp, flat Sanganer screen-printing CAD style using $colorRule with 100% hard vector-like edges, smooth clean curves, uniform motif size across the entire tile, zero gradients, zero halftones, zero blur, zero speckles, and no watermark. Make all 4 edges wrap seamlessly as a single ready-to-repeat screen printing CAD tile.
+            """.trimIndent()
+        }
     }
 
-    // ==================== 1. ONLINE AI PATTERN EXTRACTOR (GARMENT -> FLAT TRACED TILE) ====================
+    // ==================== 1. ONLINE AI PATTERN EXTRACTOR ====================
 
     fun extractFlatDesignWithAi(
         source: Bitmap,
@@ -164,12 +172,12 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
                         val bytes = Base64.decode(dataStr, Base64.DEFAULT)
                         val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                         if (bmp != null) {
-                            return AiExtractOutcome(true, bmp, "✦ Flat Traced Design Extracted!")
+                            return AiExtractOutcome(true, bmp, "✦ Flat Traced Tile Extracted!")
                         }
                     }
                 }
             }
-            AiExtractOutcome(false, null, "AI returned text only — check Model ID or use ✦ GEMINI button")
+            AiExtractOutcome(false, null, "AI returned text only — use ✦ GEMINI button")
         } catch (e: Exception) {
             AiExtractOutcome(false, null, e.message ?: "Network error")
         } finally {
@@ -177,24 +185,24 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         }
     }
 
-    // ==================== 2. OPERATOR-READY 300 DPI PSD & CAD PIPELINE ====================
+    // ==================== 2. FULL AUTOPILOT 300 DPI PSD & CAD PIPELINE ====================
 
     fun buildOperatorReadyCad(
         source: Bitmap,
         normCorners: FloatArray,
-        numColors: Int,
-        chemistry: PrintChemistry,
+        requestedColors: Int, // 0 = AUTO detect true flat screen count!
+        requestedChemistry: PrintChemistry,
         repeatType: RepeatType,
         rotary: RotaryRepeat,
         enableDotting32Lpi: Boolean,
         designCode: String,
         onProgress: (String) -> Unit
     ): CadBuildResult {
-        onProgress("1/6 Perspective straightening & 300 DPI sizing...")
+        onProgress("1/6 Straightening & sizing to 300 DPI...")
         val targetH = (rotary.inches * 300f).roundToInt().coerceIn(900, 1800)
         val warped = warpPerspectiveRepeat(source, normCorners, targetH)
 
-        onProgress("2/6 Flattening lighting & cleaning fabric texture...")
+        onProgress("2/6 Normalizing lighting...")
         val flattened = flattenUnevenLighting(warped)
         if (warped !== source) warped.recycle()
 
@@ -205,29 +213,46 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         flattened.getPixels(pixels, 0, w, 0, 0, w, h)
         flattened.recycle()
 
-        onProgress("3/6 Separating $numColors flat colours & killing speckles...")
-        val (palette, rawLabels) = quantizeFlatColors(pixels, w, h, numColors.coerceIn(2, 8))
-        val smoothedLabels = majorityDespeckle(rawLabels, w, h, passes = 3)
-        // Connected-component Speckle-Killer: removes all tiny noisy islands (< 28 px)
+        // Step 3: Auto-Detect Real Screen Count (or use user's fixed count) + Merge Near-Duplicate Shades
+        val initialK = if (requestedColors <= 0) 6 else requestedColors.coerceIn(2, 8)
+        onProgress(if (requestedColors <= 0) "3/6 Auto-detecting exact flat colours & killing speckles..." else "3/6 Separating $initialK colours & killing speckles...")
+
+        val (rawPalette, rawLabels) = quantizeFlatColors(pixels, w, h, initialK)
+        val (palette, mergedLabels) = if (requestedColors <= 0) {
+            autoMergeSimilarClusters(rawPalette, rawLabels, total)
+        } else {
+            rawPalette to IntArray(rawLabels.size) { rawLabels[it].toInt() and 0xFF }
+        }
+
+        val smoothedLabels = majorityDespeckleInt(mergedLabels, w, h, passes = 3)
         val cleanLabels = removeTinySpeckles(smoothedLabels, w, h, minAreaPx = 28)
 
         val counts = IntArray(palette.size)
         for (lbl in cleanLabels) counts[lbl]++
 
         val groundIdx = counts.indices.maxByOrNull { counts[it] } ?: 0
+        val groundLuma = luma(palette[groundIdx])
+
+        // Auto-Detect Chemistry: Dark Ground -> DISCHARGE (no Gadd screen), Light Ground -> PROCION
+        val effectiveChemistry = if (requestedChemistry == PrintChemistry.AUTO) {
+            if (groundLuma < 120) PrintChemistry.DISCHARGE else PrintChemistry.PROCION
+        } else {
+            requestedChemistry
+        }
+
         val rekhIdx = palette.indices
             .filter { it != groundIdx }
             .minByOrNull { luma(palette[it]) }
-            ?.takeIf { luma(palette[it]) < 115 }
+            ?.takeIf { luma(palette[it]) < 110 && groundLuma > 130 }
 
-        onProgress("4/6 Applying ${chemistry.name} chemistry, trapping & Bottom Rekh...")
+        onProgress("4/6 Applying ${effectiveChemistry.name} chemistry & Ashrafi channel stack...")
         val orderedClusterIndices = mutableListOf<Int>()
         val midClusters = palette.indices
             .filter { it != groundIdx && it != rekhIdx }
             .sortedByDescending { luma(palette[it]) }
 
         orderedClusterIndices.addAll(midClusters)
-        val skipGround = (chemistry == PrintChemistry.DISCHARGE && luma(palette[groundIdx]) < 145)
+        val skipGround = (effectiveChemistry == PrintChemistry.DISCHARGE && groundLuma < 145)
         if (!skipGround) orderedClusterIndices.add(groundIdx)
         if (rekhIdx != null) orderedClusterIndices.add(rekhIdx)
 
@@ -239,9 +264,9 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
 
             val isRekh = (cIdx == rekhIdx)
             val isGround = (cIdx == groundIdx)
-            val isWhiteOrLightest = (luma(col) > 215)
+            val isWhiteOrLightest = (luma(col) > 205)
 
-            when (chemistry) {
+            when (effectiveChemistry) {
                 PrintChemistry.PROCION -> {
                     if (!isRekh && !isGround) mask = dilateBinary(mask, w, h)
                 }
@@ -251,9 +276,9 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
                 PrintChemistry.KHADI_GOLD -> {
                     mask = dilateBinary(mask, w, h)
                 }
+                else -> {}
             }
 
-            // Optional 32 LPI @ 30° Round Halftone Dotting on mid-tone shading channels
             val applyDotsHere = enableDotting32Lpi && !isRekh && !isGround && !isWhiteOrLightest && stackPos == 1
             val inkBytes = if (applyDotsHere) {
                 applyHalftone32Lpi(mask, w, h)
@@ -285,7 +310,7 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
             repeatType = repeatType,
             widthInches = widthInches,
             heightInches = rotary.inches,
-            chemistry = chemistry,
+            chemistry = effectiveChemistry,
             rotary = rotary,
             designCode = designCode,
             dyedGroundColor = if (skipGround) palette[groundIdx] else null
@@ -301,7 +326,7 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         }
         cleanTile.recycle()
 
-        val summary = "${spotChannels.size} Spot Screens • ${chemistry.name} • ${rotary.label}"
+        val summary = "${spotChannels.size} Screens (${effectiveChemistry.name}) • ${rotary.label}"
         return CadBuildResult(
             previewCadBitmap = masterSheet,
             psdPathLabel = "Download/TextileCAD-Pro/$psdFileName",
@@ -313,7 +338,85 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         )
     }
 
-    // ==================== SPECKLE-KILLER (FLOOD-FILL AREA CLEANER) ====================
+    // ==================== AUTO COLOUR MERGER (PREVENTS SPLITTING 1 COLOUR INTO 2 SCREENS!) ====================
+
+    private fun autoMergeSimilarClusters(
+        rawPalette: IntArray,
+        rawLabels: ByteArray,
+        totalPx: Int
+    ): Pair<IntArray, IntArray> {
+        val k = rawPalette.size
+        val counts = IntArray(k)
+        val labelsInt = IntArray(rawLabels.size) { i ->
+            val v = rawLabels[i].toInt() and 0xFF
+            counts[v]++
+            v
+        }
+
+        val active = BooleanArray(k) { true }
+        val remap = IntArray(k) { it }
+
+        // Iteratively merge clusters that are either too close in colour OR tiny noise (< 1.0% area)
+        while (active.count { it } > 2) {
+            var mergeFrom = -1
+            var mergeTo = -1
+            var bestScore = Float.MAX_VALUE
+
+            // 1. Check for perceptually similar shades (e.g., two creams / two maroons)
+            for (i in 0 until k) {
+                if (!active[i]) continue
+                for (j in i + 1 until k) {
+                    if (!active[j]) continue
+                    val d = colorDistSq(
+                        Color.red(rawPalette[i]).toFloat(), Color.green(rawPalette[i]).toFloat(), Color.blue(rawPalette[i]).toFloat(),
+                        Color.red(rawPalette[j]).toFloat(), Color.green(rawPalette[j]).toFloat(), Color.blue(rawPalette[j]).toFloat()
+                    )
+                    // Threshold ~ 14500 merges near-identical shades cleanly without merging distinct accent colours
+                    if (d < 14500f && d < bestScore) {
+                        bestScore = d
+                        if (counts[i] < counts[j]) { mergeFrom = i; mergeTo = j } else { mergeFrom = j; mergeTo = i }
+                    }
+                }
+            }
+
+            // 2. If no similar pair, check for tiny anti-alias noise cluster (< 1.0% of image)
+            if (mergeFrom == -1) {
+                val tinyIdx = (0 until k).filter { active[it] && counts[it] < (totalPx * 0.010f).toInt() }
+                    .minByOrNull { counts[it] }
+                if (tinyIdx != null) {
+                    var nearest = -1
+                    var minD = Float.MAX_VALUE
+                    for (j in 0 until k) {
+                        if (!active[j] || j == tinyIdx) continue
+                        val d = colorDistSq(
+                            Color.red(rawPalette[tinyIdx]).toFloat(), Color.green(rawPalette[tinyIdx]).toFloat(), Color.blue(rawPalette[tinyIdx]).toFloat(),
+                            Color.red(rawPalette[j]).toFloat(), Color.green(rawPalette[j]).toFloat(), Color.blue(rawPalette[j]).toFloat()
+                        )
+                        if (d < minD) { minD = d; nearest = j }
+                    }
+                    if (nearest != -1) { mergeFrom = tinyIdx; mergeTo = nearest }
+                }
+            }
+
+            if (mergeFrom == -1) break
+            active[mergeFrom] = false
+            counts[mergeTo] += counts[mergeFrom]
+            for (x in 0 until k) {
+                if (remap[x] == mergeFrom) remap[x] = mergeTo
+            }
+        }
+
+        val finalIndices = (0 until k).filter { active[it] }
+        val newPalette = IntArray(finalIndices.size) { idx -> rawPalette[finalIndices[idx]] }
+        val oldToNew = IntArray(k)
+        for (i in 0 until k) {
+            oldToNew[i] = finalIndices.indexOf(remap[i]).coerceAtLeast(0)
+        }
+        val finalLabels = IntArray(labelsInt.size) { i -> oldToNew[labelsInt[i]] }
+        return newPalette to finalLabels
+    }
+
+    // ==================== SPECKLE-KILLER & HALFTONE ====================
 
     private fun removeTinySpeckles(labels: IntArray, w: Int, h: Int, minAreaPx: Int): IntArray {
         val total = w * h
@@ -342,7 +445,6 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
                 val cx = cur % w
                 val cy = cur / w
 
-                // 4-connected neighbors
                 if (cx > 0) {
                     val n = cur - 1
                     if (out[n] == targetLbl) {
@@ -378,11 +480,8 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         return out
     }
 
-    // ==================== 32 LPI @ 30° ROUND HALFTONE DOTTING ====================
-
     private fun applyHalftone32Lpi(mask: BooleanArray, w: Int, h: Int): ByteArray {
         val out = ByteArray(w * h) { 0xFF.toByte() }
-        // At 300 DPI, 32 LPI => cell period ~ 9.4 px, Angle = 30 degrees
         val period = 9.4
         val rad = Math.toRadians(30.0)
         val cosA = cos(rad)
@@ -398,15 +497,11 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
                 val v = -x * sinA + y * cosA
                 val cu = ((u % period) + period) % period - period * 0.5
                 val cv = ((v % period) + period) % period - period * 0.5
-                if (hypot(cu, cv) <= maxDotRadius) {
-                    out[idx] = 0.toByte()
-                }
+                if (hypot(cu, cv) <= maxDotRadius) out[idx] = 0.toByte()
             }
         }
         return out
     }
-
-    // ==================== PERSPECTIVE WARP & LIGHTING FLATTENER ====================
 
     private fun warpPerspectiveRepeat(src: Bitmap, normPts: FloatArray, targetH: Int): Bitmap {
         val sw = src.width.toFloat()
@@ -461,7 +556,7 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
 
         for (i in px.indices) {
             val localLum = luma(il[i]).toFloat().coerceAtLeast(28f)
-            val gain = (1f + (meanLum / localLum - 1f) * 0.45f).coerceIn(0.78f, 1.32f)
+            val gain = (1f + (meanLum / localLum - 1f) * 0.35f).coerceIn(0.82f, 1.25f)
             val p = px[i]
             val r = (((p shr 16) and 0xFF) * gain).toInt().coerceIn(0, 255)
             val g = (((p shr 8) and 0xFF) * gain).toInt().coerceIn(0, 255)
@@ -473,8 +568,6 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         out.setPixels(px, 0, w, 0, 0, w, h)
         return out
     }
-
-    // ==================== K-MEANS++ FLAT COLOUR SEPARATION ====================
 
     private fun quantizeFlatColors(pixels: IntArray, w: Int, h: Int, k: Int): Pair<IntArray, ByteArray> {
         val step = max(1, (w * h) / 14000)
@@ -563,8 +656,8 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         return (2f + rMean / 256f) * dr * dr + 4f * dg * dg + (2f + (255f - rMean) / 256f) * db * db
     }
 
-    private fun majorityDespeckle(labels: ByteArray, w: Int, h: Int, passes: Int): IntArray {
-        var cur = IntArray(labels.size) { labels[it].toInt() and 0xFF }
+    private fun majorityDespeckleInt(labels: IntArray, w: Int, h: Int, passes: Int): IntArray {
+        var cur = labels.copyOf()
         var next = IntArray(labels.size)
         val freq = IntArray(12)
 
@@ -612,8 +705,6 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         }
         return out
     }
-
-    // ==================== RENDER COMPOSITE, CAD SHEET & CLEAN FILM POSITIVES ====================
 
     private fun renderSpotComposite(w: Int, h: Int, baseBg: Int, channels: List<SpotChannelData>): Bitmap {
         val px = IntArray(w * h) { baseBg }
@@ -732,7 +823,6 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         return sheet
     }
 
-    // FIXED: Clean Film Positive with centered header & zero overlap on (+) registration marks!
     private fun renderFilmPositive(w: Int, h: Int, sc: SpotChannelData, designCode: String): Bitmap {
         val marginSide = 80
         val marginTop = 100
@@ -838,9 +928,9 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
         val lum = luma(c)
         return when {
-            lum > 220 -> "White"
+            lum > 215 -> "Cream"
             lum < 48 -> "Black"
-            r > g + 35 && r > b + 35 -> if (g > 130) "Orange" else "Red"
+            r > g + 35 && r > b + 35 -> if (g > 130) "Peach" else "Red"
             r > 180 && g > 170 && b < 110 -> "Yellow"
             g > r + 20 && g > b + 20 -> "Green"
             b > r + 25 && b > g + 15 -> "Blue"
