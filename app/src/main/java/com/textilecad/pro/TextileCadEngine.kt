@@ -190,7 +190,7 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
     fun buildOperatorReadyCad(
         source: Bitmap,
         normCorners: FloatArray,
-        requestedColors: Int, // 0 = AUTO detect true flat screen count!
+        requestedColors: Int,
         requestedChemistry: PrintChemistry,
         repeatType: RepeatType,
         rotary: RotaryRepeat,
@@ -213,7 +213,6 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         flattened.getPixels(pixels, 0, w, 0, 0, w, h)
         flattened.recycle()
 
-        // Step 3: Auto-Detect Real Screen Count (or use user's fixed count) + Merge Near-Duplicate Shades
         val initialK = if (requestedColors <= 0) 6 else requestedColors.coerceIn(2, 8)
         onProgress(if (requestedColors <= 0) "3/6 Auto-detecting exact flat colours & killing speckles..." else "3/6 Separating $initialK colours & killing speckles...")
 
@@ -233,7 +232,6 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         val groundIdx = counts.indices.maxByOrNull { counts[it] } ?: 0
         val groundLuma = luma(palette[groundIdx])
 
-        // Auto-Detect Chemistry: Dark Ground -> DISCHARGE (no Gadd screen), Light Ground -> PROCION
         val effectiveChemistry = if (requestedChemistry == PrintChemistry.AUTO) {
             if (groundLuma < 120) PrintChemistry.DISCHARGE else PrintChemistry.PROCION
         } else {
@@ -338,7 +336,7 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         )
     }
 
-    // ==================== AUTO COLOUR MERGER (PREVENTS SPLITTING 1 COLOUR INTO 2 SCREENS!) ====================
+    // ==================== AUTO COLOUR MERGER ====================
 
     private fun autoMergeSimilarClusters(
         rawPalette: IntArray,
@@ -356,13 +354,11 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
         val active = BooleanArray(k) { true }
         val remap = IntArray(k) { it }
 
-        // Iteratively merge clusters that are either too close in colour OR tiny noise (< 1.0% area)
         while (active.count { it } > 2) {
             var mergeFrom = -1
             var mergeTo = -1
             var bestScore = Float.MAX_VALUE
 
-            // 1. Check for perceptually similar shades (e.g., two creams / two maroons)
             for (i in 0 until k) {
                 if (!active[i]) continue
                 for (j in i + 1 until k) {
@@ -371,7 +367,6 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
                         Color.red(rawPalette[i]).toFloat(), Color.green(rawPalette[i]).toFloat(), Color.blue(rawPalette[i]).toFloat(),
                         Color.red(rawPalette[j]).toFloat(), Color.green(rawPalette[j]).toFloat(), Color.blue(rawPalette[j]).toFloat()
                     )
-                    // Threshold ~ 14500 merges near-identical shades cleanly without merging distinct accent colours
                     if (d < 14500f && d < bestScore) {
                         bestScore = d
                         if (counts[i] < counts[j]) { mergeFrom = i; mergeTo = j } else { mergeFrom = j; mergeTo = i }
@@ -379,7 +374,6 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
                 }
             }
 
-            // 2. If no similar pair, check for tiny anti-alias noise cluster (< 1.0% of image)
             if (mergeFrom == -1) {
                 val tinyIdx = (0 until k).filter { active[it] && counts[it] < (totalPx * 0.010f).toInt() }
                     .minByOrNull { counts[it] }
@@ -504,6 +498,19 @@ Extract ONLY the textile print pattern from this garment/fabric photo onto a com
     }
 
     private fun warpPerspectiveRepeat(src: Bitmap, normPts: FloatArray, targetH: Int): Bitmap {
+        val isFullFrame =
+            normPts[0] <= 0.005f && normPts[1] <= 0.005f &&
+            normPts[2] >= 0.995f && normPts[3] <= 0.005f &&
+            normPts[4] >= 0.995f && normPts[5] >= 0.995f &&
+            normPts[6] <= 0.005f && normPts[7] >= 0.995f
+
+        if (isFullFrame) {
+            val estAspect = (src.width.toFloat() / src.height.toFloat().coerceAtLeast(1f)).coerceIn(0.45f, 2.2f)
+            val outH = targetH
+            val outW = (outH * estAspect).roundToInt().coerceIn(512, 1800)
+            return Bitmap.createScaledBitmap(src, outW, outH, true)
+        }
+
         val sw = src.width.toFloat()
         val sh = src.height.toFloat()
         val srcPts = floatArrayOf(
