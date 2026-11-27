@@ -15,17 +15,13 @@ import kotlin.math.hypot
 import kotlin.math.min
 
 enum class StudioTool(val label: String) {
+    CROP_RECT("MODE: RECT"),
     CROP_4PT("MODE: 4-PT"),
     F3_FILL("F3: FILL"),
     F2_REKH("F2: REKH"),
     EYEDROPPER("PICK COL")
 }
 
-/**
- * Dual-Mode Textile CAD Workspace:
- * 1. 4-Corner Repeat & Skew Straightener (Part 26)
- * 2. Ashrafi F3 (Hard-Edge Fill) & F2 (Hard-Edge Rekh Outline) Touch Tracing Studio
- */
 class PerspectiveCropView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
@@ -35,15 +31,16 @@ class PerspectiveCropView @JvmOverloads constructor(
     private val imgRect = RectF()
     private val undoStack = ArrayDeque<Bitmap>()
 
+    // Default 3% inner trim automatically cuts off corner watermarks (e.g. Gemini star)
     private val normPts = floatArrayOf(
-        0.04f, 0.04f,
-        0.96f, 0.04f,
-        0.96f, 0.96f,
-        0.04f, 0.96f
+        0.03f, 0.03f,
+        0.97f, 0.03f,
+        0.97f, 0.97f,
+        0.03f, 0.97f
     )
     private var activeCorner = -1
 
-    var activeTool: StudioTool = StudioTool.CROP_4PT
+    var activeTool: StudioTool = StudioTool.CROP_RECT
         set(value) {
             field = value
             livePath.reset()
@@ -113,10 +110,10 @@ class PerspectiveCropView @JvmOverloads constructor(
     fun getCurrentBitmap(): Bitmap? = previewBitmap
 
     fun resetQuad() {
-        normPts[0] = 0.04f; normPts[1] = 0.04f
-        normPts[2] = 0.96f; normPts[3] = 0.04f
-        normPts[4] = 0.96f; normPts[5] = 0.96f
-        normPts[6] = 0.04f; normPts[7] = 0.96f
+        normPts[0] = 0.03f; normPts[1] = 0.03f
+        normPts[2] = 0.97f; normPts[3] = 0.03f
+        normPts[4] = 0.97f; normPts[5] = 0.97f
+        normPts[6] = 0.03f; normPts[7] = 0.97f
         invalidate()
     }
 
@@ -170,7 +167,7 @@ class PerspectiveCropView @JvmOverloads constructor(
             return
         }
 
-        if (!cropHandlesVisible || activeTool != StudioTool.CROP_4PT) return
+        if (!cropHandlesVisible || (activeTool != StudioTool.CROP_RECT && activeTool != StudioTool.CROP_4PT)) return
 
         val x0 = imgRect.left + normPts[0] * imgRect.width()
         val y0 = imgRect.top + normPts[1] * imgRect.height()
@@ -237,7 +234,6 @@ class PerspectiveCropView @JvmOverloads constructor(
                         parent?.requestDisallowInterceptTouchEvent(false)
                         pushUndoSnapshot()
                         val canvas = Canvas(bmp)
-                        // 100% Hard-Edge Mill Paint (isAntiAlias = FALSE — Ashrafi F2/F3 Rule!)
                         val hardPaint = Paint().apply {
                             isAntiAlias = false
                             isDither = false
@@ -261,7 +257,7 @@ class PerspectiveCropView @JvmOverloads constructor(
                 }
             }
 
-            StudioTool.CROP_4PT -> {
+            StudioTool.CROP_RECT, StudioTool.CROP_4PT -> {
                 if (!cropHandlesVisible) return false
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
@@ -285,8 +281,40 @@ class PerspectiveCropView @JvmOverloads constructor(
                     }
                     MotionEvent.ACTION_MOVE -> {
                         if (activeCorner >= 0) {
-                            normPts[activeCorner * 2] = ((event.x - imgRect.left) / imgRect.width()).coerceIn(0f, 1f)
-                            normPts[activeCorner * 2 + 1] = ((event.y - imgRect.top) / imgRect.height()).coerceIn(0f, 1f)
+                            val nx = ((event.x - imgRect.left) / imgRect.width()).coerceIn(0f, 1f)
+                            val ny = ((event.y - imgRect.top) / imgRect.height()).coerceIn(0f, 1f)
+                            if (activeTool == StudioTool.CROP_RECT) {
+                                // Locked 90-degree rectangle (prevents accidental trapezoid distortion!)
+                                when (activeCorner) {
+                                    0 -> { // TL
+                                        val cx = nx.coerceAtMost(normPts[2] - 0.1f)
+                                        val cy = ny.coerceAtMost(normPts[7] - 0.1f)
+                                        normPts[0] = cx; normPts[1] = cy
+                                        normPts[6] = cx; normPts[3] = cy
+                                    }
+                                    1 -> { // TR
+                                        val cx = nx.coerceAtLeast(normPts[0] + 0.1f)
+                                        val cy = ny.coerceAtMost(normPts[5] - 0.1f)
+                                        normPts[2] = cx; normPts[3] = cy
+                                        normPts[4] = cx; normPts[1] = cy
+                                    }
+                                    2 -> { // BR
+                                        val cx = nx.coerceAtLeast(normPts[6] + 0.1f)
+                                        val cy = ny.coerceAtLeast(normPts[3] + 0.1f)
+                                        normPts[4] = cx; normPts[5] = cy
+                                        normPts[2] = cx; normPts[7] = cy
+                                    }
+                                    3 -> { // BL
+                                        val cx = nx.coerceAtMost(normPts[4] - 0.1f)
+                                        val cy = ny.coerceAtLeast(normPts[1] + 0.1f)
+                                        normPts[6] = cx; normPts[7] = cy
+                                        normPts[0] = cx; normPts[5] = cy
+                                    }
+                                }
+                            } else {
+                                normPts[activeCorner * 2] = nx
+                                normPts[activeCorner * 2 + 1] = ny
+                            }
                             invalidate()
                             return true
                         }
